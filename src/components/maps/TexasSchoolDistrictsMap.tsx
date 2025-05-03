@@ -127,7 +127,7 @@ const TexasSchoolDistrictsMap = () => {
   const [viewState, setViewState] = useState<CustomViewState>({
     longitude: -99.0,   // Adjusted center for Texas
     latitude: 31.2,     // Adjusted center for Texas
-    zoom: 5.5,          // Slightly zoomed in to show Texas more prominently
+    zoom: 5,            // Changed from 5.5 to 5
     bearing: 0,
     pitch: 0,
     padding: null,
@@ -176,7 +176,6 @@ const TexasSchoolDistrictsMap = () => {
     const newYear = calculateYear();
     setSliderYear(newYear);
     
-    console.log(`Slider value changed to ${sliderValue}, setting year to ${newYear}`);
   }, [sliderValue]);
 
   const getBoundsFromCoordinates = useCallback((coordinates: Position[]) => {
@@ -309,7 +308,6 @@ const TexasSchoolDistrictsMap = () => {
 
   // Modify the organizePointsByDistrict function to use the updated getRandomPointInPolygon
   const organizePointsByDistrict = useCallback((data: GeoJSON.FeatureCollection) => {
-    console.log("Organizing points by district with CPU fallback method");
     
     const pointsByDistrict: Record<string, RandomPoint[]> = {};
     const centerPoints: RandomPoint[] = [];
@@ -385,7 +383,7 @@ const TexasSchoolDistrictsMap = () => {
     // Combine the points in the right order: first all centers, then all additional points
     const allOrderedPoints = [...centerPoints, ...additionalPoints];
     
-    console.log(`Organized ${centerPoints.length} center points and ${additionalPoints.length} additional points`);
+    // Organized center points and additional points
     
     return { centerPoints, additionalPoints, allOrderedPoints, pointsByDistrict };
   }, [getPolygonCenter, getRandomPointInPolygon]);
@@ -401,11 +399,9 @@ const TexasSchoolDistrictsMap = () => {
         let geoJsonData;
         
         if (cachedData) {
-          console.log('Using cached GeoJSON data from session storage');
           setLoadingProgress('Loading cached data...');
           geoJsonData = JSON.parse(cachedData);
         } else {
-          console.log('Fetching GeoJSON data from server');
           setLoadingProgress('Downloading map data...');
           const response = await fetch('/data/Current_Districts_2025.geojson');
           if (!response.ok) {
@@ -417,9 +413,12 @@ const TexasSchoolDistrictsMap = () => {
           // Cache the data in sessionStorage for future use
           try {
             setLoadingProgress('Caching data for faster reload...');
-            sessionStorage.setItem('texasDistrictsGeoJson', JSON.stringify(geoJsonData));
+            const jsonData = JSON.stringify(geoJsonData);
+            if (jsonData.length < 5000000) { // 5MB limit
+              sessionStorage.setItem('texasDistrictsGeoJson', jsonData);
+            }
           } catch (e) {
-            console.warn('Could not cache GeoJSON in sessionStorage (possibly too large):', e);
+            // sessionStorage capacity might be exceeded
           }
         }
         
@@ -445,13 +444,12 @@ const TexasSchoolDistrictsMap = () => {
         );
         
         if (!carrolltonFeature) {
-          console.warn(`Carrollton district (ID: ${carrolltonDistrictId}) not found in data.`);
+          // Carrollton district not found in data
           const availableIds = geoJsonData.features
             .filter((f: GeoJSON.Feature) => f.properties)
             .map((f: GeoJSON.Feature) => f.properties?.DISTRICT_I)
             .filter(Boolean)
             .slice(0, 10);
-          console.log(`Available district IDs (first 10): ${availableIds.join(', ')}`);
         }
         
         // Process points using Web Worker if supported
@@ -484,25 +482,22 @@ const TexasSchoolDistrictsMap = () => {
                   setLoading(false);
                 }, 200);
               } else if (type === 'error') {
-                console.error('Worker error:', message);
-                // Fall back to CPU processing
+                // Worker error occurred, falling back to CPU processing
                 fallbackToMainThreadProcessing(geoJsonData);
               }
             };
             
             // Handle worker errors
             worker.onerror = (error) => {
-              console.error('Worker error:', error);
+              // Worker error occurred, terminating worker and falling back to CPU processing
               worker.terminate();
-              // Fall back to CPU processing
               fallbackToMainThreadProcessing(geoJsonData);
             };
             
             // Start the worker with the GeoJSON data
             worker.postMessage({ type: 'process_geojson', data: geoJsonData });
           } catch (error) {
-            console.error('Failed to start worker:', error);
-            // Fall back to CPU processing
+            // Failed to start worker, falling back to CPU processing
             fallbackToMainThreadProcessing(geoJsonData);
           }
         } else {
@@ -531,7 +526,7 @@ const TexasSchoolDistrictsMap = () => {
             setLoading(false);
           }, 200);
         } catch (error) {
-          console.error('Error in fallback processing:', error);
+          // Error in fallback processing
           setError('Failed to process map data');
           setLoading(false);
         }
@@ -600,6 +595,16 @@ const TexasSchoolDistrictsMap = () => {
           }
         });
       }
+
+      // Calculate number of dots to show based on slider value
+      let numDotsToShow = 0;
+      if (sliderValue <= 50) {
+        numDotsToShow = Math.floor((sliderValue / 50) * 1200);
+      } else {
+        numDotsToShow = Math.floor(1200 + ((sliderValue - 50) / 50) * 3800);
+      }
+      
+      console.log(`Showing ${numDotsToShow} dots for slider value ${sliderValue}`);
 
       // Define initial schools for 2025
       const initialSchools = [
@@ -762,15 +767,23 @@ const TexasSchoolDistrictsMap = () => {
       ].map(school => ({ ...school, isCenter: true }));
 
       if (sliderYear <= 2025.08) { // Before January 2026
-        // Show only the initial 8 schools
-        visiblePoints = initialSchools;
-        initialSchools.forEach(school => {
+        // Show only the initial schools, gradually filling in
+        const initialCount = Math.min(numDotsToShow, initialSchools.length);
+        visiblePoints = initialSchools.slice(0, initialCount);
+        visiblePoints.forEach(school => {
           newDistrictsWithSchools.push(school.districtId);
         });
       } else if (sliderYear <= 2026) {
-        // After January 2026, show initial schools plus expansion schools
-        visiblePoints = [...initialSchools, ...expansionSchools];
-        [...initialSchools, ...expansionSchools].forEach(school => {
+        // After January 2026, gradually add expansion schools
+        const initialCount = initialSchools.length;
+        const expansionCount = Math.min(numDotsToShow - initialCount, expansionSchools.length);
+        
+        visiblePoints = [
+          ...initialSchools,
+          ...expansionSchools.slice(0, Math.max(0, expansionCount))
+        ];
+        
+        visiblePoints.forEach(school => {
           if (!newDistrictsWithSchools.includes(school.districtId)) {
             newDistrictsWithSchools.push(school.districtId);
           }
@@ -782,15 +795,23 @@ const TexasSchoolDistrictsMap = () => {
           !expansionSchools.some(es => es.districtId === p.districtId));
         const additionalPoints = allPoints.filter(p => !p.isCenter);
         
-        // Add all center points plus initial and expansion schools
-        visiblePoints = [...initialSchools, ...expansionSchools, ...centerPoints];
+        // Ensure we don't exceed the total number of dots
+        const totalCenterPoints = initialSchools.length + expansionSchools.length + centerPoints.length;
         
-        // Calculate what percentage of additional points to show
-        const percentage = (sliderYear - 2026);
-        const numAdditionalToShow = Math.floor(additionalPoints.length * percentage);
-        
-        // Add the additional points
-        visiblePoints = [...visiblePoints, ...additionalPoints.slice(0, numAdditionalToShow)];
+        // Always prioritize center points first
+        if (numDotsToShow <= totalCenterPoints) {
+          // Add all initial and expansion schools
+          visiblePoints = [...initialSchools, ...expansionSchools];
+          
+          const remainingDots = numDotsToShow - visiblePoints.length;
+          visiblePoints = [...visiblePoints, ...centerPoints.slice(0, remainingDots)];
+        } else {
+          // Add all center points plus some additional points
+          visiblePoints = [...initialSchools, ...expansionSchools, ...centerPoints];
+          
+          const additionalCount = numDotsToShow - visiblePoints.length;
+          visiblePoints = [...visiblePoints, ...additionalPoints.slice(0, additionalCount)];
+        }
         
         // Track which districts have schools
         const districtsWithPoints = new Set<string>();
@@ -882,19 +903,17 @@ const TexasSchoolDistrictsMap = () => {
   useEffect(() => {
     // Completely prevent wheel events for zoom
     const preventZoom = (e: WheelEvent) => {
-      // Always prevent wheel events when ctrl key is pressed (zoom gesture)
-      if (e.ctrlKey) {
-        e.preventDefault();
-      }
+      // Always prevent wheel events regardless of ctrl key state
+      e.preventDefault();
+      e.stopPropagation();
     };
 
     // Prevent all map movement events
     const preventMapMovement = (e: Event) => {
-      if (mapMovementLocked) {
-        e.stopPropagation();
-        if (e.cancelable) {
-          e.preventDefault();
-        }
+      // Always prevent map movement regardless of mapMovementLocked state
+      e.stopPropagation();
+      if (e.cancelable) {
+        e.preventDefault();
       }
     };
 
@@ -930,7 +949,7 @@ const TexasSchoolDistrictsMap = () => {
         ...prev,
         width: window.innerWidth,
         height: window.innerHeight,
-        zoom: isMobile ? 4.8 : 5.5 // Lower zoom level for mobile
+        zoom: isMobile ? 2 : 5 // Changed from 4.8 to 2 for mobile, from 5.5 to 5 for web
       }));
     };
     
@@ -1095,8 +1114,8 @@ const TexasSchoolDistrictsMap = () => {
             mapStyle="mapbox://styles/mapbox/dark-v10"
             interactiveLayerIds={['districts']}
             onLoad={onMapLoad}
-            maxZoom={9}
-            minZoom={4}
+            maxZoom={viewState.zoom}
+            minZoom={viewState.zoom}
             dragRotate={false}
             dragPan={false}
             scrollZoom={false}
@@ -1104,6 +1123,7 @@ const TexasSchoolDistrictsMap = () => {
             doubleClickZoom={false}
             keyboard={false}
             touchZoomRotate={false}
+            cooperativeGestures={true}
           >
             <Source
               id="districts"
@@ -1145,4 +1165,4 @@ const TexasSchoolDistrictsMap = () => {
   );
 };
 
-export default TexasSchoolDistrictsMap; 
+export default TexasSchoolDistrictsMap;                                  
